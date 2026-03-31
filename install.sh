@@ -43,10 +43,10 @@ echo ""
 echo "Installing desktop launcher..."
 
 APPS_DIR="$HOME/.local/share/applications"
-ICONS_DIR="$HOME/.local/share/icons/hicolor/64x64/apps"
+ICONS_DIR="$HOME/.local/share/icons/hicolor/scalable/apps"
 mkdir -p "$APPS_DIR" "$ICONS_DIR"
 
-# Copy icon
+# Copy icon (SVGs belong in scalable/apps)
 cp "$SCRIPT_DIR/icon.svg" "$ICONS_DIR/habit-tracker.svg"
 
 # Write .desktop file with the real path baked in
@@ -61,6 +61,7 @@ Icon=habit-tracker
 Terminal=false
 Categories=Utility;
 StartupNotify=true
+StartupWMClass=habit-tracker
 EOF
 
 chmod +x "$APPS_DIR/habit-tracker.desktop"

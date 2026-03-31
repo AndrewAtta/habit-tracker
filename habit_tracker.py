@@ -573,6 +573,15 @@ class HabitTracker(QMainWindow):
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    app.setApplicationName("habit-tracker")
+    app.setDesktopFileName("habit-tracker")   # links window to the .desktop file
+
+    # Set window icon from the SVG sitting next to this script
+    icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.svg")
+    if os.path.exists(icon_path):
+        from PyQt5.QtGui import QIcon
+        app.setWindowIcon(QIcon(icon_path))
+
     win = HabitTracker()
     win.show()
     sys.exit(app.exec_())
