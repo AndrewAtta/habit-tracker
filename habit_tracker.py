@@ -51,10 +51,22 @@ NEUTRAL  = "#252538"
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 def _cell_color(completed: int, n: int, is_future: bool) -> str:
-    if is_future:      return NEUTRAL
-    if completed == 0: return RED
-    if completed == n: return GREEN
-    return ORANGE
+    if is_future or n == 0:
+        return NEUTRAL
+    ratio = completed / n
+    # Two-segment interpolation: RED → YELLOW → GREEN
+    if ratio <= 0.5:
+        t = ratio * 2
+        r1, g1, b1 = 0xd9, 0x5f, 0x5f   # RED
+        r2, g2, b2 = 0xe0, 0xb0, 0x35   # YELLOW
+    else:
+        t = (ratio - 0.5) * 2
+        r1, g1, b1 = 0xe0, 0xb0, 0x35   # YELLOW
+        r2, g2, b2 = 0x3d, 0xb8, 0x70   # GREEN
+    r = int(r1 + (r2 - r1) * t)
+    g = int(g1 + (g2 - g1) * t)
+    b = int(b1 + (b2 - b1) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
 
 # ── calendar day cell ─────────────────────────────────────────────────────────
 class DayCell(QWidget):
@@ -124,18 +136,14 @@ class DayCell(QWidget):
         p.drawText(QRectF(8, 5, w - 16, 22),
                    Qt.AlignLeft | Qt.AlignVCenter, str(self.day))
 
-        # Progress dots
+        # Progress count
         if not self.is_future and self.n_habits > 0:
-            dr, gap = 5, 4
-            total_w = self.n_habits * dr + (self.n_habits - 1) * gap
-            x0 = max(6, (w - total_w) // 2)
-            y0 = h - 13
-            p.setPen(Qt.NoPen)
-            for i in range(self.n_habits):
-                x = x0 + i * (dr + gap)
-                dot = QColor(TEXT) if i < self.completed else fill.darker(200)
-                p.setBrush(QBrush(dot))
-                p.drawEllipse(x, y0, dr, dr)
+            f2 = QFont("Helvetica Neue", 9)
+            p.setFont(f2)
+            p.setPen(QColor(TEXT))
+            label = f"{self.completed}/{self.n_habits}"
+            p.drawText(QRectF(0, h - 20, w - 6, 16),
+                       Qt.AlignRight | Qt.AlignVCenter, label)
 
         p.end()
 
