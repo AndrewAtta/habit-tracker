@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="12" fill="#0d0d1a"/>
+  <rect x="10" y="14" width="44" height="38" rx="6" fill="#1a1a2e"/>
+  <rect x="10" y="14" width="44" height="12" rx="6" fill="#7c6af7"/>
+  <rect x="10" y="20" width="44" height="6" fill="#7c6af7"/>
+  <!-- calendar grid dots -->
+  <circle cx="22" cy="36" r="3" fill="#d95f5f"/>
+  <circle cx="32" cy="36" r="3" fill="#e0b035"/>
+  <circle cx="42" cy="36" r="3" fill="#3db870"/>
+  <circle cx="22" cy="46" r="3" fill="#3db870"/>
+  <circle cx="32" cy="46" r="3" fill="#3db870"/>
+  <circle cx="42" cy="46" r="3" fill="#252538"/>
+</svg>
