@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Simple Linux desktop habit tracker with a calendar + side-panel layout."""
+"""Habit Tracker — modern dark UI with editable habits."""
 
 import tkinter as tk
-import json
-import os
-import calendar
+import json, os, calendar
 from datetime import datetime, date
 
+# ── persistence ───────────────────────────────────────────────────────────────
 DATA_FILE = os.path.expanduser("~/.habit_tracker_data.json")
 
-HABITS = [
+DEFAULT_HABITS = [
     "Exercise",
     "Read for 30 minutes",
     "Meditate",
@@ -17,267 +16,416 @@ HABITS = [
     "Sleep 8 hours",
 ]
 
-# Color palette
-BG_DARK       = "#1e1e2e"
-BG_PANEL      = "#2a2a3e"
-BG_HEADER     = "#12121e"
-TEXT_LIGHT    = "#e0e0f0"
-TEXT_DIM      = "#888899"
-ACCENT        = "#7c6af7"
-COLOR_NONE    = "#c0392b"   # 0/5  — red
-COLOR_PARTIAL = "#e67e22"   # 1-4  — orange
-COLOR_DONE    = "#27ae60"   # 5/5  — green
-COLOR_FUTURE  = "#3a3a52"   # future days — neutral
-DAY_NAMES     = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-
 def load_data() -> dict:
     if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
+        with open(DATA_FILE) as f:
+            raw = json.load(f)
+        # migrate old format (dict-of-dicts keyed by habit name → index arrays)
+        if raw and "habits" not in raw:
+            habits = list(DEFAULT_HABITS)
+            days = {
+                dk: [bool(dv.get(h, False)) for h in habits]
+                for dk, dv in raw.items()
+                if isinstance(dv, dict)
+            }
+            return {"habits": habits, "days": days}
+        return raw
+    return {"habits": list(DEFAULT_HABITS), "days": {}}
 
 def save_data(data: dict):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+# ── palette ───────────────────────────────────────────────────────────────────
+BG         = "#0d0d1a"
+SURFACE    = "#13131f"
+SURFACE2   = "#1a1a2e"
+BORDER     = "#252538"
+TEXT       = "#e2e2f0"
+TEXT_MUTED = "#5a5a7a"
+ACCENT     = "#7c6af7"
+RED        = "#d95f5f"
+ORANGE     = "#d4874a"
+GREEN      = "#3db870"
+NEUTRAL    = "#252538"
 
-def day_color(completed: int, is_future: bool) -> str:
-    if is_future:
-        return COLOR_FUTURE
-    if completed == 0:
-        return COLOR_NONE
-    if completed == len(HABITS):
-        return COLOR_DONE
-    return COLOR_PARTIAL
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
+# ── drawing helper ────────────────────────────────────────────────────────────
+def _rrect(cv: tk.Canvas, x: int, y: int, w: int, h: int, r: int, fill: str):
+    """Draw a filled rounded rectangle on a canvas."""
+    x2, y2 = x + w, y + h
+    # four corner arcs
+    cv.create_arc(x,    y,    x+2*r, y+2*r, start=90,  extent=90, fill=fill, outline=fill)
+    cv.create_arc(x2-2*r, y, x2,   y+2*r,  start=0,   extent=90, fill=fill, outline=fill)
+    cv.create_arc(x,  y2-2*r, x+2*r, y2,   start=180, extent=90, fill=fill, outline=fill)
+    cv.create_arc(x2-2*r, y2-2*r, x2, y2,  start=270, extent=90, fill=fill, outline=fill)
+    # fill body
+    cv.create_rectangle(x+r, y,   x2-r, y2,   fill=fill, outline=fill)
+    cv.create_rectangle(x,   y+r, x2,   y2-r, fill=fill, outline=fill)
 
+def _dim(hex_color: str) -> str:
+    """Return a darkened version of a hex color (for empty progress dots)."""
+    try:
+        r = int(int(hex_color[1:3], 16) * 0.45)
+        g = int(int(hex_color[3:5], 16) * 0.45)
+        b = int(int(hex_color[5:7], 16) * 0.45)
+        return f"#{r:02x}{g:02x}{b:02x}"
+    except Exception:
+        return "#222233"
+
+def cell_color(completed: int, n: int, is_future: bool) -> str:
+    if is_future:   return NEUTRAL
+    if completed == 0: return RED
+    if completed == n: return GREEN
+    return ORANGE
+
+# ── calendar cell (canvas-based for rounded corners) ─────────────────────────
+class DayCell(tk.Canvas):
+    R = 10  # corner radius
+
+    def __init__(self, parent, day, date_key, is_today, is_future,
+                 completed, n_habits, on_click):
+        super().__init__(parent, bg=BG, highlightthickness=0,
+                         cursor="arrow" if is_future else "hand2")
+        self.day       = day
+        self.date_key  = date_key
+        self.is_today  = is_today
+        self.is_future = is_future
+        self.completed = completed
+        self.n_habits  = n_habits
+        self.selected  = False
+
+        if not is_future:
+            self.bind("<Button-1>", lambda e: on_click(date_key, day))
+        self.bind("<Configure>", lambda e: self._draw())
+
+    def refresh(self, completed: int, selected: bool):
+        self.completed = completed
+        self.selected  = selected
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        if w < 6 or h < 6:
+            return
+
+        fill = cell_color(self.completed, self.n_habits, self.is_future)
+        highlighted = self.is_today or self.selected
+
+        if highlighted:
+            _rrect(self, 0, 0, w, h, self.R, ACCENT)
+            _rrect(self, 3, 3, w - 6, h - 6, self.R - 2, fill)
+        else:
+            _rrect(self, 0, 0, w, h, self.R, fill)
+
+        # Day number
+        weight = "bold" if self.is_today else "normal"
+        self.create_text(10, 8, text=str(self.day),
+                         fill=TEXT, font=("Helvetica Neue", 11, weight), anchor="nw")
+
+        # Progress dots
+        if not self.is_future and self.n_habits > 0:
+            dr, gap = 3, 4
+            total_w = self.n_habits * dr * 2 + (self.n_habits - 1) * gap
+            x0 = max(8, (w - total_w) // 2)
+            y0 = h - 12
+            for i in range(self.n_habits):
+                x = x0 + i * (dr * 2 + gap)
+                dot = TEXT if i < self.completed else _dim(fill)
+                self.create_oval(x, y0, x + dr * 2, y0 + dr * 2,
+                                 fill=dot, outline="")
+
+# ── habit row in the side panel ───────────────────────────────────────────────
+class HabitRow(tk.Frame):
+    def __init__(self, parent, text: str, checked: bool, on_toggle):
+        super().__init__(parent, bg=SURFACE2, cursor="hand2")
+        self.checked    = checked
+        self._on_toggle = on_toggle
+
+        self._cv = tk.Canvas(self, width=20, height=20,
+                             bg=SURFACE2, highlightthickness=0)
+        self._cv.pack(side=tk.LEFT, padx=(16, 10), pady=13)
+        self._draw_check()
+
+        self._lbl = tk.Label(self, text=text, bg=SURFACE2, fg=TEXT,
+                             font=("Helvetica Neue", 10), anchor="w",
+                             wraplength=160, justify="left")
+        self._lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
+
+        for w in (self, self._cv, self._lbl):
+            w.bind("<Button-1>", self._toggle)
+
+    def _toggle(self, _=None):
+        self.checked = not self.checked
+        self._draw_check()
+        self._on_toggle()
+
+    def _draw_check(self):
+        self._cv.delete("all")
+        if self.checked:
+            self._cv.create_oval(1, 1, 19, 19, fill=ACCENT, outline=ACCENT)
+            # checkmark
+            self._cv.create_line(5, 10, 8, 14, 15, 5,
+                                 fill="white", width=2,
+                                 capstyle="round", joinstyle="round")
+        else:
+            self._cv.create_oval(1, 1, 19, 19, fill="", outline=BORDER, width=2)
+
+# ── main application ──────────────────────────────────────────────────────────
 class HabitTracker(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Habit Tracker")
-        self.configure(bg=BG_DARK)
-        self.minsize(820, 540)
+        self.configure(bg=BG)
+        self.minsize(860, 560)
 
-        self.data = load_data()
+        self._raw   = load_data()
+        self.habits: list = self._raw.setdefault("habits", list(DEFAULT_HABITS))
+        self.days:   dict = self._raw.setdefault("days",   {})
+
         now = datetime.now()
-        self.year  = now.year
-        self.month = now.month
-        self.today = date.today()
-
-        # Currently selected day (date_key string or None)
+        self.year, self.month = now.year, now.month
+        self.today            = date.today()
         self.selected_key: str | None = None
-        self.habit_vars: list[tk.BooleanVar] = []
+        self._panel_mode      = "placeholder"
+        self.cell_map: dict[str, DayCell] = {}
 
+        self._build_ui()
+
+    # ── layout ────────────────────────────────────────────────────────────────
+    def _build_ui(self):
         self._build_header()
 
-        # Main body: calendar area (left) + side panel (right)
-        body = tk.Frame(self, bg=BG_DARK)
+        body = tk.Frame(self, bg=BG)
         body.pack(fill=tk.BOTH, expand=True)
 
-        # Left: day-name row + calendar grid
-        left = tk.Frame(body, bg=BG_DARK)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16, 8), pady=(10, 16))
-
-        self._build_day_names(left)
-
-        self.grid_frame = tk.Frame(left, bg=BG_DARK)
+        left = tk.Frame(body, bg=BG)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
+                  padx=(16, 6), pady=(8, 16))
+        self._build_day_labels(left)
+        self.grid_frame = tk.Frame(left, bg=BG)
         self.grid_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Right: side panel (fixed width)
-        self.side_panel = tk.Frame(body, bg=BG_PANEL, width=220)
-        self.side_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 16), pady=(10, 16))
-        self.side_panel.pack_propagate(False)
-        self._build_side_panel_placeholder()
-
-        # date_key -> (cell_frame, inner_frame, num_label, prog_label, is_future, cell_date)
-        self.cell_refs: dict = {}
+        self.panel = tk.Frame(body, bg=SURFACE2, width=248)
+        self.panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 16), pady=(8, 16))
+        self.panel.pack_propagate(False)
+        self._show_placeholder()
 
         self._draw_calendar()
 
-    # ------------------------------------------------------------------ header
-
     def _build_header(self):
-        hdr = tk.Frame(self, bg=BG_HEADER)
+        hdr = tk.Frame(self, bg=SURFACE)
         hdr.pack(fill=tk.X)
+        tk.Frame(hdr, bg=ACCENT, height=2).pack(fill=tk.X)
 
-        btn_cfg = dict(bg=BG_HEADER, fg=TEXT_LIGHT, activebackground=BG_PANEL,
-                       activeforeground=TEXT_LIGHT, relief=tk.FLAT,
-                       font=("Sans", 14, "bold"), cursor="hand2", padx=14, pady=10)
+        inner = tk.Frame(hdr, bg=SURFACE)
+        inner.pack(fill=tk.X, padx=16, pady=8)
 
-        tk.Button(hdr, text="‹", command=self._prev_month, **btn_cfg).pack(side=tk.LEFT)
-        tk.Button(hdr, text="›", command=self._next_month, **btn_cfg).pack(side=tk.RIGHT)
+        nav = dict(bg=SURFACE, fg=TEXT_MUTED, activebackground=SURFACE2,
+                   activeforeground=TEXT, relief=tk.FLAT,
+                   font=("Helvetica Neue", 16), cursor="hand2",
+                   padx=10, pady=2, borderwidth=0)
+        tk.Button(inner, text="‹", command=self._prev_month, **nav).pack(side=tk.LEFT)
+        tk.Button(inner, text="›", command=self._next_month, **nav).pack(side=tk.LEFT, padx=(4, 0))
 
-        self.month_label = tk.Label(hdr, bg=BG_HEADER, fg=TEXT_LIGHT,
-                                    font=("Sans", 14, "bold"))
-        self.month_label.pack(side=tk.LEFT, expand=True)
-        self._update_month_label()
+        self.month_lbl = tk.Label(inner, bg=SURFACE, fg=TEXT,
+                                  font=("Helvetica Neue", 14, "bold"))
+        self.month_lbl.pack(side=tk.LEFT, padx=14)
+        self._update_month_lbl()
 
-    def _update_month_label(self):
-        self.month_label.config(
-            text=datetime(self.year, self.month, 1).strftime("%B %Y")
-        )
+        tk.Button(inner, text="⚙", command=self._toggle_settings,
+                  bg=SURFACE, fg=TEXT_MUTED, activebackground=SURFACE2,
+                  activeforeground=TEXT, relief=tk.FLAT,
+                  font=("Helvetica Neue", 14), cursor="hand2",
+                  padx=10, pady=2, borderwidth=0).pack(side=tk.RIGHT)
 
-    # ------------------------------------------------------------ day-name row
+    def _update_month_lbl(self):
+        self.month_lbl.config(
+            text=datetime(self.year, self.month, 1).strftime("%B %Y"))
 
-    def _build_day_names(self, parent):
-        row = tk.Frame(parent, bg=BG_DARK)
-        row.pack(fill=tk.X, pady=(0, 4))
+    def _build_day_labels(self, parent):
+        row = tk.Frame(parent, bg=BG)
+        row.pack(fill=tk.X, pady=(0, 6))
         for i, name in enumerate(DAY_NAMES):
             row.columnconfigure(i, weight=1)
-            tk.Label(row, text=name, bg=BG_DARK, fg=TEXT_DIM,
-                     font=("Sans", 9, "bold"), anchor="center",
+            tk.Label(row, text=name, bg=BG, fg=TEXT_MUTED,
+                     font=("Helvetica Neue", 9, "bold"), anchor="center",
                      ).grid(row=0, column=i, sticky="ew")
 
-    # --------------------------------------------------------------- side panel
-
-    def _clear_side_panel(self):
-        for w in self.side_panel.winfo_children():
+    # ── side panel: placeholder ───────────────────────────────────────────────
+    def _clear_panel(self):
+        for w in self.panel.winfo_children():
             w.destroy()
-        self.habit_vars = []
 
-    def _build_side_panel_placeholder(self):
-        self._clear_side_panel()
-        tk.Label(self.side_panel, text="Select a day",
-                 bg=BG_PANEL, fg=TEXT_DIM, font=("Sans", 11),
-                 wraplength=180, justify="center",
+    def _show_placeholder(self):
+        self._clear_panel()
+        self._panel_mode = "placeholder"
+        tk.Label(self.panel, text="Select a day\nto track habits",
+                 bg=SURFACE2, fg=TEXT_MUTED,
+                 font=("Helvetica Neue", 11), justify="center",
                  ).place(relx=0.5, rely=0.5, anchor="center")
 
-    def _build_side_panel(self, date_key: str, day: int):
-        self._clear_side_panel()
+    # ── side panel: day view ──────────────────────────────────────────────────
+    def _show_day_panel(self, date_key: str, day: int):
+        self._clear_panel()
+        self._panel_mode = "day"
         self.selected_key = date_key
 
-        label = datetime(self.year, self.month, day).strftime("%A\n%-d %B %Y")
-        tk.Label(self.side_panel, text=label, bg=BG_PANEL, fg=TEXT_LIGHT,
-                 font=("Sans", 12, "bold"), justify="center",
-                 ).pack(pady=(18, 6))
+        dt     = datetime(self.year, self.month, day)
+        checks = list(self.days.get(date_key, []))
+        while len(checks) < len(self.habits):
+            checks.append(False)
 
-        tk.Frame(self.side_panel, bg=ACCENT, height=1).pack(fill=tk.X, padx=16, pady=(0, 10))
+        tk.Label(self.panel, text=dt.strftime("%A"),
+                 bg=SURFACE2, fg=TEXT_MUTED,
+                 font=("Helvetica Neue", 10)).pack(pady=(20, 0))
+        tk.Label(self.panel, text=dt.strftime("%-d %B %Y"),
+                 bg=SURFACE2, fg=TEXT,
+                 font=("Helvetica Neue", 13, "bold")).pack(pady=(2, 14))
+        tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, padx=0)
 
-        day_data = self.data.get(date_key, {})
+        self._habit_rows: list[HabitRow] = []
+        for i, (habit, checked) in enumerate(zip(self.habits, checks)):
+            row = HabitRow(self.panel, habit, bool(checked), self._on_toggle)
+            row.pack(fill=tk.X)
+            self._habit_rows.append(row)
+            if i < len(self.habits) - 1:
+                tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, padx=16)
 
-        for habit in HABITS:
-            var = tk.BooleanVar(value=bool(day_data.get(habit, False)))
-            self.habit_vars.append(var)
-
-            cb = tk.Checkbutton(
-                self.side_panel, variable=var, text=habit,
-                bg=BG_PANEL, activebackground=BG_PANEL,
-                selectcolor=BG_DARK,
-                fg=TEXT_LIGHT, activeforeground=TEXT_LIGHT,
-                font=("Sans", 10), anchor="w", wraplength=180,
-                justify="left", cursor="hand2",
-                command=self._on_habit_toggle,
-            )
-            cb.pack(fill=tk.X, padx=14, pady=4)
-
-    def _on_habit_toggle(self):
+    def _on_toggle(self):
         if self.selected_key is None:
             return
-        day_data = {h: v.get() for h, v in zip(HABITS, self.habit_vars)}
-        self.data[self.selected_key] = day_data
-        save_data(self.data)
-        self._refresh_calendar()   # update colours without rebuilding widgets
+        self.days[self.selected_key] = [row.checked for row in self._habit_rows]
+        save_data(self._raw)
+        self._refresh_cells()
 
-    # --------------------------------------------------------------- calendar
+    # ── side panel: settings ──────────────────────────────────────────────────
+    def _toggle_settings(self):
+        if self._panel_mode == "settings":
+            self._show_placeholder()
+            self.selected_key = None
+            self._refresh_cells()
+        else:
+            self._show_settings_panel()
 
+    def _show_settings_panel(self):
+        self._clear_panel()
+        self._panel_mode = "settings"
+        self.selected_key = None
+        self._refresh_cells()
+
+        tk.Label(self.panel, text="Edit Habits",
+                 bg=SURFACE2, fg=TEXT,
+                 font=("Helvetica Neue", 13, "bold")).pack(pady=(20, 2))
+        tk.Label(self.panel, text="Click Save to apply changes",
+                 bg=SURFACE2, fg=TEXT_MUTED,
+                 font=("Helvetica Neue", 9)).pack()
+        tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, pady=(12, 8))
+
+        self._habit_entries: list[tk.Entry] = []
+        for habit in self.habits:
+            e = tk.Entry(self.panel,
+                         font=("Helvetica Neue", 10),
+                         bg=SURFACE, fg=TEXT,
+                         insertbackground=TEXT, relief=tk.FLAT,
+                         bd=6, highlightthickness=1,
+                         highlightbackground=BORDER,
+                         highlightcolor=ACCENT)
+            e.insert(0, habit)
+            e.pack(fill=tk.X, padx=14, pady=5)
+            self._habit_entries.append(e)
+
+        tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, pady=(10, 0))
+        tk.Button(self.panel, text="Save Habits",
+                  command=self._save_habits,
+                  bg=ACCENT, fg="white",
+                  activebackground="#6655dd", activeforeground="white",
+                  relief=tk.FLAT, font=("Helvetica Neue", 10, "bold"),
+                  cursor="hand2", pady=9, borderwidth=0,
+                  ).pack(fill=tk.X, padx=14, pady=12)
+
+    def _save_habits(self):
+        new_habits = [e.get().strip() or f"Habit {i+1}"
+                      for i, e in enumerate(self._habit_entries)]
+        n = len(new_habits)
+        for dk in self.days:
+            arr = self.days[dk]
+            while len(arr) < n:
+                arr.append(False)
+            self.days[dk] = arr[:n]
+        self.habits[:] = new_habits
+        save_data(self._raw)
+        self._show_placeholder()
+        self._draw_calendar()
+
+    # ── calendar ──────────────────────────────────────────────────────────────
     def _draw_calendar(self):
-        """Full rebuild — only called on month navigation or first load."""
         for w in self.grid_frame.winfo_children():
             w.destroy()
-        self.cell_refs = {}
+        self.cell_map = {}
 
-        for col in range(7):
-            self.grid_frame.columnconfigure(col, weight=1, uniform="col")
+        for c in range(7):
+            self.grid_frame.columnconfigure(c, weight=1, uniform="col")
 
+        n     = len(self.habits)
         weeks = calendar.monthcalendar(self.year, self.month)
-        for row_idx, week in enumerate(weeks):
-            self.grid_frame.rowconfigure(row_idx, weight=1, uniform="row")
-            for col_idx, day in enumerate(week):
+
+        for r, week in enumerate(weeks):
+            self.grid_frame.rowconfigure(r, weight=1, uniform="row")
+            for c, day in enumerate(week):
                 if day == 0:
-                    tk.Frame(self.grid_frame, bg=BG_DARK).grid(
-                        row=row_idx, column=col_idx, sticky="nsew", padx=3, pady=3)
+                    tk.Frame(self.grid_frame, bg=BG).grid(
+                        row=r, column=c, sticky="nsew", padx=3, pady=3)
                     continue
 
-                date_key  = f"{self.year}-{self.month:02d}-{day:02d}"
+                dk        = f"{self.year}-{self.month:02d}-{day:02d}"
                 cell_date = date(self.year, self.month, day)
                 is_future = cell_date > self.today
-                day_data  = self.data.get(date_key, {})
-                completed = sum(1 for h in HABITS if day_data.get(h, False))
-                bg        = day_color(completed, is_future)
+                completed = sum(self.days.get(dk, [])[:n])
 
-                is_today    = (cell_date == self.today)
-                is_selected = (date_key == self.selected_key)
-                border = ACCENT if (is_today or is_selected) else bg
+                cell = DayCell(
+                    self.grid_frame, day, dk,
+                    is_today=cell_date == self.today,
+                    is_future=is_future,
+                    completed=completed,
+                    n_habits=n,
+                    on_click=self._select_day,
+                )
+                cell.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
+                self.cell_map[dk] = cell
 
-                cell = tk.Frame(self.grid_frame, bg=border,
-                                highlightbackground=border, highlightthickness=2)
-                cell.grid(row=row_idx, column=col_idx, sticky="nsew", padx=3, pady=3)
+    def _refresh_cells(self):
+        n = len(self.habits)
+        for dk, cell in self.cell_map.items():
+            completed = sum(self.days.get(dk, [])[:n])
+            cell.refresh(completed, dk == self.selected_key)
 
-                inner = tk.Frame(cell, bg=bg)
-                inner.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
-
-                num_font = ("Sans", 11, "bold") if is_today else ("Sans", 11)
-                num_lbl = tk.Label(inner, text=str(day), bg=bg, fg="white",
-                                   font=num_font, anchor="nw")
-                num_lbl.pack(anchor="nw", padx=6, pady=(4, 0))
-
-                prog_text = f"{completed}/{len(HABITS)}" if not is_future else ""
-                prog_lbl = tk.Label(inner, text=prog_text, bg=bg, fg="white",
-                                    font=("Sans", 8), anchor="se")
-                prog_lbl.pack(anchor="se", padx=6, pady=(0, 4))
-
-                self.cell_refs[date_key] = (cell, inner, num_lbl, prog_lbl, is_future, cell_date)
-
-                if not is_future:
-                    for widget in (cell, inner, num_lbl, prog_lbl):
-                        widget.bind("<Button-1>",
-                                    lambda e, dk=date_key, d=day: self._select_day(dk, d))
-                        widget.config(cursor="hand2")
-
-    def _refresh_calendar(self):
-        """Update cell colours in-place — no widget destruction, no blink."""
-        for date_key, (cell, inner, num_lbl, prog_lbl, is_future, cell_date) in self.cell_refs.items():
-            day_data  = self.data.get(date_key, {})
-            completed = sum(1 for h in HABITS if day_data.get(h, False))
-            bg        = day_color(completed, is_future)
-
-            is_today    = (cell_date == self.today)
-            is_selected = (date_key == self.selected_key)
-            border = ACCENT if (is_today or is_selected) else bg
-
-            cell.config(bg=border, highlightbackground=border)
-            inner.config(bg=bg)
-            num_lbl.config(bg=bg)
-            prog_lbl.config(bg=bg,
-                            text=f"{completed}/{len(HABITS)}" if not is_future else "")
-
-    # --------------------------------------------------- navigation & selection
-
+    # ── navigation ────────────────────────────────────────────────────────────
     def _prev_month(self):
         if self.month == 1:
             self.month, self.year = 12, self.year - 1
         else:
             self.month -= 1
-        self.selected_key = None
-        self._build_side_panel_placeholder()
-        self._update_month_label()
-        self._draw_calendar()
+        self._after_nav()
 
     def _next_month(self):
         if self.month == 12:
             self.month, self.year = 1, self.year + 1
         else:
             self.month += 1
+        self._after_nav()
+
+    def _after_nav(self):
         self.selected_key = None
-        self._build_side_panel_placeholder()
-        self._update_month_label()
+        self._show_placeholder()
+        self._update_month_lbl()
         self._draw_calendar()
 
     def _select_day(self, date_key: str, day: int):
-        self._build_side_panel(date_key, day)
-        self._refresh_calendar()   # update highlight without rebuilding
+        self._show_day_panel(date_key, day)
+        self._refresh_cells()
 
 
 if __name__ == "__main__":
