@@ -1,33 +1,33 @@
 #!/usr/bin/env python3
-"""Habit Tracker — modern dark UI with editable habits."""
+"""Habit Tracker — PyQt5 modern dark UI."""
 
-import tkinter as tk
-import json, os, calendar
+import sys, json, os, calendar
 from datetime import datetime, date
 
-# ── persistence ───────────────────────────────────────────────────────────────
-DATA_FILE = os.path.expanduser("~/.habit_tracker_data.json")
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QLabel, QPushButton,
+    QHBoxLayout, QVBoxLayout, QGridLayout, QFrame, QLineEdit,
+    QSizePolicy,
+)
+from PyQt5.QtCore import Qt, QRectF, pyqtSignal
+from PyQt5.QtGui import QPainter, QColor, QPainterPath, QBrush, QPen, QFont
 
+# ── persistence ───────────────────────────────────────────────────────────────
+DATA_FILE      = os.path.expanduser("~/.habit_tracker_data.json")
 DEFAULT_HABITS = [
-    "Exercise",
-    "Read for 30 minutes",
-    "Meditate",
-    "Drink 8 glasses of water",
-    "Sleep 8 hours",
+    "Exercise", "Read for 30 minutes", "Meditate",
+    "Drink 8 glasses of water", "Sleep 8 hours",
 ]
 
 def load_data() -> dict:
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE) as f:
             raw = json.load(f)
-        # migrate old format (dict-of-dicts keyed by habit name → index arrays)
+        # migrate old format (dict-of-dicts keyed by habit name)
         if raw and "habits" not in raw:
             habits = list(DEFAULT_HABITS)
-            days = {
-                dk: [bool(dv.get(h, False)) for h in habits]
-                for dk, dv in raw.items()
-                if isinstance(dv, dict)
-            }
+            days   = {dk: [bool(dv.get(h, False)) for h in habits]
+                      for dk, dv in raw.items() if isinstance(dv, dict)}
             return {"habits": habits, "days": days}
         return raw
     return {"habits": list(DEFAULT_HABITS), "days": {}}
@@ -37,57 +37,32 @@ def save_data(data: dict):
         json.dump(data, f, indent=2)
 
 # ── palette ───────────────────────────────────────────────────────────────────
-BG         = "#0d0d1a"
-SURFACE    = "#13131f"
-SURFACE2   = "#1a1a2e"
-BORDER     = "#252538"
-TEXT       = "#e2e2f0"
-TEXT_MUTED = "#5a5a7a"
-ACCENT     = "#7c6af7"
-RED        = "#d95f5f"
-ORANGE     = "#d4874a"
-GREEN      = "#3db870"
-NEUTRAL    = "#252538"
-
+BG       = "#0d0d1a"
+SURFACE  = "#13131f"
+SURFACE2 = "#1a1a2e"
+BORDER   = "#252538"
+TEXT     = "#e2e2f0"
+MUTED    = "#5a5a7a"
+ACCENT   = "#7c6af7"
+RED      = "#d95f5f"
+ORANGE   = "#d4874a"
+GREEN    = "#3db870"
+NEUTRAL  = "#252538"
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-# ── drawing helper ────────────────────────────────────────────────────────────
-def _rrect(cv: tk.Canvas, x: int, y: int, w: int, h: int, r: int, fill: str):
-    """Draw a filled rounded rectangle on a canvas."""
-    x2, y2 = x + w, y + h
-    # four corner arcs
-    cv.create_arc(x,    y,    x+2*r, y+2*r, start=90,  extent=90, fill=fill, outline=fill)
-    cv.create_arc(x2-2*r, y, x2,   y+2*r,  start=0,   extent=90, fill=fill, outline=fill)
-    cv.create_arc(x,  y2-2*r, x+2*r, y2,   start=180, extent=90, fill=fill, outline=fill)
-    cv.create_arc(x2-2*r, y2-2*r, x2, y2,  start=270, extent=90, fill=fill, outline=fill)
-    # fill body
-    cv.create_rectangle(x+r, y,   x2-r, y2,   fill=fill, outline=fill)
-    cv.create_rectangle(x,   y+r, x2,   y2-r, fill=fill, outline=fill)
-
-def _dim(hex_color: str) -> str:
-    """Return a darkened version of a hex color (for empty progress dots)."""
-    try:
-        r = int(int(hex_color[1:3], 16) * 0.45)
-        g = int(int(hex_color[3:5], 16) * 0.45)
-        b = int(int(hex_color[5:7], 16) * 0.45)
-        return f"#{r:02x}{g:02x}{b:02x}"
-    except Exception:
-        return "#222233"
-
-def cell_color(completed: int, n: int, is_future: bool) -> str:
-    if is_future:   return NEUTRAL
+def _cell_color(completed: int, n: int, is_future: bool) -> str:
+    if is_future:      return NEUTRAL
     if completed == 0: return RED
     if completed == n: return GREEN
     return ORANGE
 
-# ── calendar cell (canvas-based for rounded corners) ─────────────────────────
-class DayCell(tk.Canvas):
-    R = 10  # corner radius
+# ── calendar day cell ─────────────────────────────────────────────────────────
+class DayCell(QWidget):
+    clicked = pyqtSignal(str, int)  # date_key, day
 
-    def __init__(self, parent, day, date_key, is_today, is_future,
-                 completed, n_habits, on_click):
-        super().__init__(parent, bg=BG, highlightthickness=0,
-                         cursor="arrow" if is_future else "hand2")
+    def __init__(self, day: int, date_key: str, is_today: bool,
+                 is_future: bool, completed: int, n_habits: int):
+        super().__init__()
         self.day       = day
         self.date_key  = date_key
         self.is_today  = is_today
@@ -95,312 +70,471 @@ class DayCell(tk.Canvas):
         self.completed = completed
         self.n_habits  = n_habits
         self.selected  = False
-
+        self._hovered  = False
+        self.setMinimumSize(56, 52)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         if not is_future:
-            self.bind("<Button-1>", lambda e: on_click(date_key, day))
-        self.bind("<Configure>", lambda e: self._draw())
+            self.setCursor(Qt.PointingHandCursor)
+            self.setMouseTracking(True)
 
     def refresh(self, completed: int, selected: bool):
         self.completed = completed
         self.selected  = selected
-        self._draw()
+        self.update()
 
-    def _draw(self):
-        self.delete("all")
-        w, h = self.winfo_width(), self.winfo_height()
-        if w < 6 or h < 6:
-            return
+    def mousePressEvent(self, e):
+        if not self.is_future and e.button() == Qt.LeftButton:
+            self.clicked.emit(self.date_key, self.day)
 
-        fill = cell_color(self.completed, self.n_habits, self.is_future)
-        highlighted = self.is_today or self.selected
+    def enterEvent(self, e):
+        if not self.is_future:
+            self._hovered = True
+            self.update()
 
-        if highlighted:
-            _rrect(self, 0, 0, w, h, self.R, ACCENT)
-            _rrect(self, 3, 3, w - 6, h - 6, self.R - 2, fill)
+    def leaveEvent(self, e):
+        self._hovered = False
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h, r = self.width(), self.height(), 10
+
+        fill = QColor(_cell_color(self.completed, self.n_habits, self.is_future))
+        if self._hovered:
+            fill = fill.darker(120)
+
+        if self.is_today or self.selected:
+            outer = QPainterPath()
+            outer.addRoundedRect(QRectF(0, 0, w, h), r, r)
+            p.fillPath(outer, QBrush(QColor(ACCENT)))
+            inner = QPainterPath()
+            inner.addRoundedRect(QRectF(3, 3, w - 6, h - 6), r - 2, r - 2)
+            p.fillPath(inner, QBrush(fill))
         else:
-            _rrect(self, 0, 0, w, h, self.R, fill)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(0, 0, w, h), r, r)
+            p.fillPath(path, QBrush(fill))
 
         # Day number
-        weight = "bold" if self.is_today else "normal"
-        self.create_text(10, 8, text=str(self.day),
-                         fill=TEXT, font=("Helvetica Neue", 11, weight), anchor="nw")
+        f = QFont("Helvetica Neue", 11)
+        f.setBold(self.is_today)
+        p.setFont(f)
+        p.setPen(QColor(TEXT))
+        p.drawText(QRectF(8, 5, w - 16, 22),
+                   Qt.AlignLeft | Qt.AlignVCenter, str(self.day))
 
         # Progress dots
         if not self.is_future and self.n_habits > 0:
-            dr, gap = 3, 4
-            total_w = self.n_habits * dr * 2 + (self.n_habits - 1) * gap
-            x0 = max(8, (w - total_w) // 2)
-            y0 = h - 12
+            dr, gap = 5, 4
+            total_w = self.n_habits * dr + (self.n_habits - 1) * gap
+            x0 = max(6, (w - total_w) // 2)
+            y0 = h - 13
+            p.setPen(Qt.NoPen)
             for i in range(self.n_habits):
-                x = x0 + i * (dr * 2 + gap)
-                dot = TEXT if i < self.completed else _dim(fill)
-                self.create_oval(x, y0, x + dr * 2, y0 + dr * 2,
-                                 fill=dot, outline="")
+                x = x0 + i * (dr + gap)
+                dot = QColor(TEXT) if i < self.completed else fill.darker(200)
+                p.setBrush(QBrush(dot))
+                p.drawEllipse(x, y0, dr, dr)
 
-# ── habit row in the side panel ───────────────────────────────────────────────
-class HabitRow(tk.Frame):
-    def __init__(self, parent, text: str, checked: bool, on_toggle):
-        super().__init__(parent, bg=SURFACE2, cursor="hand2")
-        self.checked    = checked
-        self._on_toggle = on_toggle
+        p.end()
 
-        self._cv = tk.Canvas(self, width=20, height=20,
-                             bg=SURFACE2, highlightthickness=0)
-        self._cv.pack(side=tk.LEFT, padx=(16, 10), pady=13)
-        self._draw_check()
+# ── circular checkbox ─────────────────────────────────────────────────────────
+class CircleCheck(QWidget):
+    clicked = pyqtSignal()
 
-        self._lbl = tk.Label(self, text=text, bg=SURFACE2, fg=TEXT,
-                             font=("Helvetica Neue", 10), anchor="w",
-                             wraplength=160, justify="left")
-        self._lbl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 12))
+    def __init__(self, checked: bool):
+        super().__init__()
+        self.checked = checked
+        self.setFixedSize(20, 20)
+        self.setCursor(Qt.PointingHandCursor)
 
-        for w in (self, self._cv, self._lbl):
-            w.bind("<Button-1>", self._toggle)
+    def set_checked(self, v: bool):
+        self.checked = v
+        self.update()
 
-    def _toggle(self, _=None):
-        self.checked = not self.checked
-        self._draw_check()
-        self._on_toggle()
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.clicked.emit()
 
-    def _draw_check(self):
-        self._cv.delete("all")
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
         if self.checked:
-            self._cv.create_oval(1, 1, 19, 19, fill=ACCENT, outline=ACCENT)
-            # checkmark
-            self._cv.create_line(5, 10, 8, 14, 15, 5,
-                                 fill="white", width=2,
-                                 capstyle="round", joinstyle="round")
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(QColor(ACCENT)))
+            p.drawEllipse(1, 1, 18, 18)
+            p.setPen(QPen(QColor("white"), 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawLine(5, 10, 8, 14)
+            p.drawLine(8, 14, 15, 6)
         else:
-            self._cv.create_oval(1, 1, 19, 19, fill="", outline=BORDER, width=2)
+            p.setPen(QPen(QColor(BORDER), 2))
+            p.setBrush(Qt.NoBrush)
+            p.drawEllipse(1, 1, 18, 18)
+        p.end()
 
-# ── main application ──────────────────────────────────────────────────────────
-class HabitTracker(tk.Tk):
+# ── habit row ─────────────────────────────────────────────────────────────────
+class HabitRow(QFrame):
+    toggled = pyqtSignal()
+
+    def __init__(self, text: str, checked: bool):
+        super().__init__()
+        self.checked = checked
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet(f"background: {SURFACE2};")
+        self.setCursor(Qt.PointingHandCursor)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(16, 10, 12, 10)
+        row.setSpacing(12)
+
+        self._check = CircleCheck(checked)
+        self._check.clicked.connect(self._do_toggle)
+        row.addWidget(self._check)
+
+        lbl = QLabel(text)
+        lbl.setWordWrap(True)
+        lbl.setStyleSheet(f"color: {TEXT}; font-size: 10pt; background: transparent;")
+        lbl.mousePressEvent = lambda e: self._do_toggle()
+        row.addWidget(lbl, 1)
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._do_toggle()
+
+    def _do_toggle(self):
+        self.checked = not self.checked
+        self._check.set_checked(self.checked)
+        self.toggled.emit()
+
+# ── divider helper ────────────────────────────────────────────────────────────
+def _divider(color=BORDER, indent=0) -> QFrame:
+    line = QFrame()
+    line.setFrameShape(QFrame.HLine)
+    line.setFrameShadow(QFrame.Plain)
+    line.setFixedHeight(1)
+    line.setStyleSheet(f"background: {color}; margin: 0 {indent}px;")
+    return line
+
+# ── main window ───────────────────────────────────────────────────────────────
+class HabitTracker(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("Habit Tracker")
-        self.configure(bg=BG)
-        self.minsize(860, 560)
+        self.setWindowTitle("Habit Tracker")
+        self.setMinimumSize(860, 560)
+        self.setStyleSheet(f"QMainWindow {{ background: {BG}; }}")
 
         self._raw   = load_data()
-        self.habits: list = self._raw.setdefault("habits", list(DEFAULT_HABITS))
-        self.days:   dict = self._raw.setdefault("days",   {})
-
-        now = datetime.now()
+        self.habits = self._raw.setdefault("habits", list(DEFAULT_HABITS))
+        self.days   = self._raw.setdefault("days",   {})
+        now         = datetime.now()
         self.year, self.month = now.year, now.month
-        self.today            = date.today()
-        self.selected_key: str | None = None
-        self._panel_mode      = "placeholder"
+        self.today  = date.today()
+        self.sel_key: str | None = None
+        self._panel_mode = "placeholder"
         self.cell_map: dict[str, DayCell] = {}
+        self._habit_rows: list[HabitRow]  = []
 
-        self._build_ui()
+        # Root layout
+        root = QWidget()
+        root.setStyleSheet(f"background: {BG};")
+        self.setCentralWidget(root)
+        vbox = QVBoxLayout(root)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+        vbox.addWidget(self._make_header())
 
-    # ── layout ────────────────────────────────────────────────────────────────
-    def _build_ui(self):
-        self._build_header()
+        body = QHBoxLayout()
+        body.setContentsMargins(16, 8, 16, 16)
+        body.setSpacing(10)
 
-        body = tk.Frame(self, bg=BG)
-        body.pack(fill=tk.BOTH, expand=True)
+        # Calendar (left)
+        cal = QWidget()
+        cal.setStyleSheet(f"background: {BG};")
+        cal_v = QVBoxLayout(cal)
+        cal_v.setContentsMargins(0, 0, 0, 0)
+        cal_v.setSpacing(0)
+        cal_v.addWidget(self._make_day_labels())
+        self.grid_widget = QWidget()
+        self.grid_widget.setStyleSheet(f"background: {BG};")
+        self.grid = QGridLayout(self.grid_widget)
+        self.grid.setSpacing(4)
+        self.grid.setContentsMargins(0, 4, 0, 0)
+        cal_v.addWidget(self.grid_widget, 1)
+        body.addWidget(cal, 1)
 
-        left = tk.Frame(body, bg=BG)
-        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True,
-                  padx=(16, 6), pady=(8, 16))
-        self._build_day_labels(left)
-        self.grid_frame = tk.Frame(left, bg=BG)
-        self.grid_frame.pack(fill=tk.BOTH, expand=True)
+        # Side panel (right, fixed width)
+        self.panel = QFrame()
+        self.panel.setFixedWidth(252)
+        self.panel.setFrameShape(QFrame.NoFrame)
+        self.panel.setStyleSheet(
+            f"QFrame {{ background: {SURFACE2}; border-radius: 10px; }}")
+        self.panel_v = QVBoxLayout(self.panel)
+        self.panel_v.setContentsMargins(0, 0, 0, 0)
+        self.panel_v.setSpacing(0)
+        body.addWidget(self.panel)
 
-        self.panel = tk.Frame(body, bg=SURFACE2, width=248)
-        self.panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 16), pady=(8, 16))
-        self.panel.pack_propagate(False)
+        vbox.addLayout(body, 1)
+
         self._show_placeholder()
-
         self._draw_calendar()
 
-    def _build_header(self):
-        hdr = tk.Frame(self, bg=SURFACE)
-        hdr.pack(fill=tk.X)
-        tk.Frame(hdr, bg=ACCENT, height=2).pack(fill=tk.X)
+    # ── header ────────────────────────────────────────────────────────────────
+    def _make_header(self) -> QWidget:
+        hdr = QWidget()
+        hdr.setStyleSheet(f"background: {SURFACE};")
+        v = QVBoxLayout(hdr)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
 
-        inner = tk.Frame(hdr, bg=SURFACE)
-        inner.pack(fill=tk.X, padx=16, pady=8)
+        bar = QWidget()
+        bar.setFixedHeight(2)
+        bar.setStyleSheet(f"background: {ACCENT};")
+        v.addWidget(bar)
 
-        nav = dict(bg=SURFACE, fg=TEXT_MUTED, activebackground=SURFACE2,
-                   activeforeground=TEXT, relief=tk.FLAT,
-                   font=("Helvetica Neue", 16), cursor="hand2",
-                   padx=10, pady=2, borderwidth=0)
-        tk.Button(inner, text="‹", command=self._prev_month, **nav).pack(side=tk.LEFT)
-        tk.Button(inner, text="›", command=self._next_month, **nav).pack(side=tk.LEFT, padx=(4, 0))
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {SURFACE};")
+        h = QHBoxLayout(inner)
+        h.setContentsMargins(16, 6, 16, 6)
+        h.setSpacing(4)
 
-        self.month_lbl = tk.Label(inner, bg=SURFACE, fg=TEXT,
-                                  font=("Helvetica Neue", 14, "bold"))
-        self.month_lbl.pack(side=tk.LEFT, padx=14)
+        nb = f"""QPushButton {{
+                    background: transparent; color: {MUTED};
+                    border: none; font-size: 16pt; padding: 2px 10px; }}
+                 QPushButton:hover {{
+                    color: {TEXT}; background: {SURFACE2};
+                    border-radius: 6px; }}"""
+        prev = QPushButton("‹")
+        prev.setStyleSheet(nb)
+        prev.setCursor(Qt.PointingHandCursor)
+        prev.clicked.connect(self._prev_month)
+        h.addWidget(prev)
+
+        nxt = QPushButton("›")
+        nxt.setStyleSheet(nb)
+        nxt.setCursor(Qt.PointingHandCursor)
+        nxt.clicked.connect(self._next_month)
+        h.addWidget(nxt)
+
+        self.month_lbl = QLabel()
+        self.month_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 14pt; font-weight: bold;"
+            f" padding-left: 8px; background: transparent;")
         self._update_month_lbl()
+        h.addWidget(self.month_lbl)
+        h.addStretch()
 
-        tk.Button(inner, text="⚙", command=self._toggle_settings,
-                  bg=SURFACE, fg=TEXT_MUTED, activebackground=SURFACE2,
-                  activeforeground=TEXT, relief=tk.FLAT,
-                  font=("Helvetica Neue", 14), cursor="hand2",
-                  padx=10, pady=2, borderwidth=0).pack(side=tk.RIGHT)
+        gear = QPushButton("⚙")
+        gear.setStyleSheet(nb)
+        gear.setCursor(Qt.PointingHandCursor)
+        gear.clicked.connect(self._toggle_settings)
+        h.addWidget(gear)
+
+        v.addWidget(inner)
+        return hdr
+
+    def _make_day_labels(self) -> QWidget:
+        w = QWidget()
+        w.setStyleSheet(f"background: {BG};")
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        for name in DAY_NAMES:
+            lbl = QLabel(name)
+            lbl.setAlignment(Qt.AlignCenter)
+            lbl.setStyleSheet(
+                f"color: {MUTED}; font-size: 9pt; font-weight: bold;"
+                f" background: transparent;")
+            h.addWidget(lbl, 1)
+        return w
 
     def _update_month_lbl(self):
-        self.month_lbl.config(
-            text=datetime(self.year, self.month, 1).strftime("%B %Y"))
+        self.month_lbl.setText(
+            datetime(self.year, self.month, 1).strftime("%B %Y"))
 
-    def _build_day_labels(self, parent):
-        row = tk.Frame(parent, bg=BG)
-        row.pack(fill=tk.X, pady=(0, 6))
-        for i, name in enumerate(DAY_NAMES):
-            row.columnconfigure(i, weight=1)
-            tk.Label(row, text=name, bg=BG, fg=TEXT_MUTED,
-                     font=("Helvetica Neue", 9, "bold"), anchor="center",
-                     ).grid(row=0, column=i, sticky="ew")
-
-    # ── side panel: placeholder ───────────────────────────────────────────────
+    # ── side panel ────────────────────────────────────────────────────────────
     def _clear_panel(self):
-        for w in self.panel.winfo_children():
-            w.destroy()
+        while self.panel_v.count():
+            item = self.panel_v.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._habit_rows = []
 
     def _show_placeholder(self):
         self._clear_panel()
         self._panel_mode = "placeholder"
-        tk.Label(self.panel, text="Select a day\nto track habits",
-                 bg=SURFACE2, fg=TEXT_MUTED,
-                 font=("Helvetica Neue", 11), justify="center",
-                 ).place(relx=0.5, rely=0.5, anchor="center")
+        lbl = QLabel("Select a day\nto track habits")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setStyleSheet(
+            f"color: {MUTED}; font-size: 11pt; background: transparent;")
+        self.panel_v.addStretch()
+        self.panel_v.addWidget(lbl)
+        self.panel_v.addStretch()
 
-    # ── side panel: day view ──────────────────────────────────────────────────
     def _show_day_panel(self, date_key: str, day: int):
         self._clear_panel()
         self._panel_mode = "day"
-        self.selected_key = date_key
+        self.sel_key = date_key
 
         dt     = datetime(self.year, self.month, day)
         checks = list(self.days.get(date_key, []))
         while len(checks) < len(self.habits):
             checks.append(False)
 
-        tk.Label(self.panel, text=dt.strftime("%A"),
-                 bg=SURFACE2, fg=TEXT_MUTED,
-                 font=("Helvetica Neue", 10)).pack(pady=(20, 0))
-        tk.Label(self.panel, text=dt.strftime("%-d %B %Y"),
-                 bg=SURFACE2, fg=TEXT,
-                 font=("Helvetica Neue", 13, "bold")).pack(pady=(2, 14))
-        tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, padx=0)
+        # Date heading
+        head = QWidget()
+        head.setStyleSheet(f"background: {SURFACE2};")
+        hv = QVBoxLayout(head)
+        hv.setContentsMargins(0, 20, 0, 14)
+        hv.setSpacing(3)
+        dow = QLabel(dt.strftime("%A"))
+        dow.setAlignment(Qt.AlignCenter)
+        dow.setStyleSheet(
+            f"color: {MUTED}; font-size: 10pt; background: transparent;")
+        hv.addWidget(dow)
+        dlbl = QLabel(dt.strftime("%-d %B %Y"))
+        dlbl.setAlignment(Qt.AlignCenter)
+        dlbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 13pt; font-weight: bold;"
+            f" background: transparent;")
+        hv.addWidget(dlbl)
+        self.panel_v.addWidget(head)
+        self.panel_v.addWidget(_divider())
 
-        self._habit_rows: list[HabitRow] = []
         for i, (habit, checked) in enumerate(zip(self.habits, checks)):
-            row = HabitRow(self.panel, habit, bool(checked), self._on_toggle)
-            row.pack(fill=tk.X)
+            row = HabitRow(habit, bool(checked))
+            row.toggled.connect(self._on_toggle)
+            self.panel_v.addWidget(row)
             self._habit_rows.append(row)
             if i < len(self.habits) - 1:
-                tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, padx=16)
+                self.panel_v.addWidget(_divider(indent=16))
+
+        self.panel_v.addStretch()
 
     def _on_toggle(self):
-        if self.selected_key is None:
+        if not self.sel_key:
             return
-        self.days[self.selected_key] = [row.checked for row in self._habit_rows]
+        self.days[self.sel_key] = [r.checked for r in self._habit_rows]
         save_data(self._raw)
         self._refresh_cells()
 
-    # ── side panel: settings ──────────────────────────────────────────────────
+    # ── settings panel ────────────────────────────────────────────────────────
     def _toggle_settings(self):
         if self._panel_mode == "settings":
             self._show_placeholder()
-            self.selected_key = None
+            self.sel_key = None
             self._refresh_cells()
         else:
-            self._show_settings_panel()
+            self._show_settings()
 
-    def _show_settings_panel(self):
+    def _show_settings(self):
         self._clear_panel()
         self._panel_mode = "settings"
-        self.selected_key = None
+        self.sel_key = None
         self._refresh_cells()
 
-        tk.Label(self.panel, text="Edit Habits",
-                 bg=SURFACE2, fg=TEXT,
-                 font=("Helvetica Neue", 13, "bold")).pack(pady=(20, 2))
-        tk.Label(self.panel, text="Click Save to apply changes",
-                 bg=SURFACE2, fg=TEXT_MUTED,
-                 font=("Helvetica Neue", 9)).pack()
-        tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, pady=(12, 8))
+        head = QWidget()
+        head.setStyleSheet(f"background: {SURFACE2};")
+        hv = QVBoxLayout(head)
+        hv.setContentsMargins(16, 20, 16, 12)
+        hv.setSpacing(4)
+        hv.addWidget(QLabel("Edit Habits", styleSheet=
+            f"color: {TEXT}; font-size: 13pt; font-weight: bold;"
+            f" background: transparent;"))
+        hv.addWidget(QLabel("Rename any habit then save", styleSheet=
+            f"color: {MUTED}; font-size: 9pt; background: transparent;"))
+        self.panel_v.addWidget(head)
+        self.panel_v.addWidget(_divider())
 
-        self._habit_entries: list[tk.Entry] = []
+        entry_ss = f"""QLineEdit {{
+            background: {SURFACE}; color: {TEXT};
+            border: 1px solid {BORDER}; border-radius: 6px;
+            padding: 6px 10px; font-size: 10pt; }}
+        QLineEdit:focus {{ border-color: {ACCENT}; }}"""
+
+        form = QWidget()
+        form.setStyleSheet(f"background: {SURFACE2};")
+        fv = QVBoxLayout(form)
+        fv.setContentsMargins(14, 10, 14, 4)
+        fv.setSpacing(8)
+        self._entries: list[QLineEdit] = []
         for habit in self.habits:
-            e = tk.Entry(self.panel,
-                         font=("Helvetica Neue", 10),
-                         bg=SURFACE, fg=TEXT,
-                         insertbackground=TEXT, relief=tk.FLAT,
-                         bd=6, highlightthickness=1,
-                         highlightbackground=BORDER,
-                         highlightcolor=ACCENT)
-            e.insert(0, habit)
-            e.pack(fill=tk.X, padx=14, pady=5)
-            self._habit_entries.append(e)
+            e = QLineEdit(habit)
+            e.setStyleSheet(entry_ss)
+            fv.addWidget(e)
+            self._entries.append(e)
+        self.panel_v.addWidget(form)
 
-        tk.Frame(self.panel, bg=BORDER, height=1).pack(fill=tk.X, pady=(10, 0))
-        tk.Button(self.panel, text="Save Habits",
-                  command=self._save_habits,
-                  bg=ACCENT, fg="white",
-                  activebackground="#6655dd", activeforeground="white",
-                  relief=tk.FLAT, font=("Helvetica Neue", 10, "bold"),
-                  cursor="hand2", pady=9, borderwidth=0,
-                  ).pack(fill=tk.X, padx=14, pady=12)
+        self.panel_v.addWidget(_divider())
+
+        btn_wrap = QWidget()
+        btn_wrap.setStyleSheet(f"background: {SURFACE2};")
+        bv = QVBoxLayout(btn_wrap)
+        bv.setContentsMargins(14, 10, 14, 14)
+        save_btn = QPushButton("Save Habits")
+        save_btn.setStyleSheet(f"""QPushButton {{
+            background: {ACCENT}; color: white; border: none;
+            border-radius: 6px; font-size: 10pt; font-weight: bold;
+            padding: 9px; }}
+        QPushButton:hover {{ background: #6655dd; }}""")
+        save_btn.setCursor(Qt.PointingHandCursor)
+        save_btn.clicked.connect(self._save_habits)
+        bv.addWidget(save_btn)
+        self.panel_v.addWidget(btn_wrap)
+        self.panel_v.addStretch()
 
     def _save_habits(self):
-        new_habits = [e.get().strip() or f"Habit {i+1}"
-                      for i, e in enumerate(self._habit_entries)]
-        n = len(new_habits)
+        new = [e.text().strip() or f"Habit {i+1}"
+               for i, e in enumerate(self._entries)]
+        n = len(new)
         for dk in self.days:
             arr = self.days[dk]
             while len(arr) < n:
                 arr.append(False)
             self.days[dk] = arr[:n]
-        self.habits[:] = new_habits
+        self.habits[:] = new
         save_data(self._raw)
         self._show_placeholder()
         self._draw_calendar()
 
     # ── calendar ──────────────────────────────────────────────────────────────
     def _draw_calendar(self):
-        for w in self.grid_frame.winfo_children():
-            w.destroy()
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self.cell_map = {}
-
-        for c in range(7):
-            self.grid_frame.columnconfigure(c, weight=1, uniform="col")
 
         n     = len(self.habits)
         weeks = calendar.monthcalendar(self.year, self.month)
 
         for r, week in enumerate(weeks):
-            self.grid_frame.rowconfigure(r, weight=1, uniform="row")
+            self.grid.setRowStretch(r, 1)
             for c, day in enumerate(week):
+                self.grid.setColumnStretch(c, 1)
                 if day == 0:
-                    tk.Frame(self.grid_frame, bg=BG).grid(
-                        row=r, column=c, sticky="nsew", padx=3, pady=3)
+                    spacer = QWidget()
+                    spacer.setStyleSheet(f"background: {BG};")
+                    self.grid.addWidget(spacer, r, c)
                     continue
-
                 dk        = f"{self.year}-{self.month:02d}-{day:02d}"
                 cell_date = date(self.year, self.month, day)
                 is_future = cell_date > self.today
                 completed = sum(self.days.get(dk, [])[:n])
-
-                cell = DayCell(
-                    self.grid_frame, day, dk,
-                    is_today=cell_date == self.today,
-                    is_future=is_future,
-                    completed=completed,
-                    n_habits=n,
-                    on_click=self._select_day,
-                )
-                cell.grid(row=r, column=c, sticky="nsew", padx=3, pady=3)
+                cell = DayCell(day, dk,
+                               is_today=cell_date == self.today,
+                               is_future=is_future,
+                               completed=completed,
+                               n_habits=n)
+                cell.clicked.connect(self._select_day)
+                self.grid.addWidget(cell, r, c)
                 self.cell_map[dk] = cell
 
     def _refresh_cells(self):
         n = len(self.habits)
         for dk, cell in self.cell_map.items():
             completed = sum(self.days.get(dk, [])[:n])
-            cell.refresh(completed, dk == self.selected_key)
+            cell.refresh(completed, dk == self.sel_key)
 
     # ── navigation ────────────────────────────────────────────────────────────
     def _prev_month(self):
@@ -418,7 +552,7 @@ class HabitTracker(tk.Tk):
         self._after_nav()
 
     def _after_nav(self):
-        self.selected_key = None
+        self.sel_key = None
         self._show_placeholder()
         self._update_month_lbl()
         self._draw_calendar()
@@ -429,5 +563,8 @@ class HabitTracker(tk.Tk):
 
 
 if __name__ == "__main__":
-    app = HabitTracker()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    win = HabitTracker()
+    win.show()
+    sys.exit(app.exec_())
