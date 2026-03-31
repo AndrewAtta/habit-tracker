@@ -91,6 +91,9 @@ class HabitTracker(tk.Tk):
         self.side_panel.pack_propagate(False)
         self._build_side_panel_placeholder()
 
+        # date_key -> (cell_frame, inner_frame, num_label, prog_label, is_future, cell_date)
+        self.cell_refs: dict = {}
+
         self._draw_calendar()
 
     # ------------------------------------------------------------------ header
@@ -175,13 +178,15 @@ class HabitTracker(tk.Tk):
         day_data = {h: v.get() for h, v in zip(HABITS, self.habit_vars)}
         self.data[self.selected_key] = day_data
         save_data(self.data)
-        self._draw_calendar()   # refresh cell colours
+        self._refresh_calendar()   # update colours without rebuilding widgets
 
     # --------------------------------------------------------------- calendar
 
     def _draw_calendar(self):
+        """Full rebuild — only called on month navigation or first load."""
         for w in self.grid_frame.winfo_children():
             w.destroy()
+        self.cell_refs = {}
 
         for col in range(7):
             self.grid_frame.columnconfigure(col, weight=1, uniform="col")
@@ -214,20 +219,39 @@ class HabitTracker(tk.Tk):
                 inner.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
                 num_font = ("Sans", 11, "bold") if is_today else ("Sans", 11)
-                tk.Label(inner, text=str(day), bg=bg, fg="white",
-                         font=num_font, anchor="nw",
-                         ).pack(anchor="nw", padx=6, pady=(4, 0))
+                num_lbl = tk.Label(inner, text=str(day), bg=bg, fg="white",
+                                   font=num_font, anchor="nw")
+                num_lbl.pack(anchor="nw", padx=6, pady=(4, 0))
 
                 prog_text = f"{completed}/{len(HABITS)}" if not is_future else ""
-                tk.Label(inner, text=prog_text, bg=bg, fg="white",
-                         font=("Sans", 8), anchor="se",
-                         ).pack(anchor="se", padx=6, pady=(0, 4))
+                prog_lbl = tk.Label(inner, text=prog_text, bg=bg, fg="white",
+                                    font=("Sans", 8), anchor="se")
+                prog_lbl.pack(anchor="se", padx=6, pady=(0, 4))
+
+                self.cell_refs[date_key] = (cell, inner, num_lbl, prog_lbl, is_future, cell_date)
 
                 if not is_future:
-                    for widget in (cell, inner) + tuple(inner.winfo_children()):
+                    for widget in (cell, inner, num_lbl, prog_lbl):
                         widget.bind("<Button-1>",
                                     lambda e, dk=date_key, d=day: self._select_day(dk, d))
                         widget.config(cursor="hand2")
+
+    def _refresh_calendar(self):
+        """Update cell colours in-place — no widget destruction, no blink."""
+        for date_key, (cell, inner, num_lbl, prog_lbl, is_future, cell_date) in self.cell_refs.items():
+            day_data  = self.data.get(date_key, {})
+            completed = sum(1 for h in HABITS if day_data.get(h, False))
+            bg        = day_color(completed, is_future)
+
+            is_today    = (cell_date == self.today)
+            is_selected = (date_key == self.selected_key)
+            border = ACCENT if (is_today or is_selected) else bg
+
+            cell.config(bg=border, highlightbackground=border)
+            inner.config(bg=bg)
+            num_lbl.config(bg=bg)
+            prog_lbl.config(bg=bg,
+                            text=f"{completed}/{len(HABITS)}" if not is_future else "")
 
     # --------------------------------------------------- navigation & selection
 
@@ -253,7 +277,7 @@ class HabitTracker(tk.Tk):
 
     def _select_day(self, date_key: str, day: int):
         self._build_side_panel(date_key, day)
-        self._draw_calendar()   # re-draw so selected highlight updates
+        self._refresh_calendar()   # update highlight without rebuilding
 
 
 if __name__ == "__main__":
